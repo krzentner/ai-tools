@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# PreToolUse hook for Claude Code and Codex: deny tool calls that would write a
+# `*.human.md` file.
+#
+# Both tools pipe the pending call to the hook as JSON on stdin and treat exit
+# code 2 as "deny", with stderr shown to the model. The decision itself is made
+# by hook.ts next to this file, so the pi extension and this hook enforce the
+# same rules; this wrapper only locates that file and runs it with node.
+#
+# Without node the wrapper falls back to a plain grep and denies any call that
+# so much as mentions `.human.md` - coarser (it blocks `cat` too), but it fails
+# closed rather than open.
+#
+# Wired into ~/.claude/settings.json and ~/.codex/hooks.json by install.py.
+# Test with `node index.test.ts`.
+set -u
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HOOK="$HERE/hook.ts"
+
+if command -v node >/dev/null 2>&1 && [ -f "$HOOK" ]; then
+    # --no-warnings: node prints an ExperimentalWarning for type stripping on
+    # some versions, and stderr is what the model sees on a denial.
+    exec node --no-warnings "$HOOK"
+fi
+
+if grep -qi '\.human\.md' 2>/dev/null; then
+    echo "Blocked: this tool call refers to a *.human.md file, which agents must not write (node unavailable, so no finer check was possible; use the read tool to read it)." >&2
+    exit 2
+fi
+exit 0
