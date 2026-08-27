@@ -35,6 +35,14 @@ shows what would change; `--uninstall` removes exactly what was added.
 Keep the clone where it is — the settings point at the hook script by absolute
 path. If you move it, re-run `install.py` and it fixes the paths.
 
+**Codex needs one extra step.** Codex runs a hook only after you have reviewed
+and trusted it, and *silently skips it otherwise* — including in `codex exec`.
+After installing, start `codex` interactively once: it shows "Hooks need
+review" at startup; pick **Trust all and continue** (or open `/hooks` later).
+Trust is recorded against the hook's hash, so re-run `install.py` and re-trust
+if the wrapper script ever changes. Until you do this the Codex leg is not
+enforced.
+
 Then tell the agents about the rule so they don't waste turns bumping into it.
 A line like this in `CLAUDE.md` / `AGENTS.md` / pi's `AGENTS.md` works:
 
@@ -94,6 +102,28 @@ node index.test.ts
 Covers the path rules, the shell heuristic, the hook end-to-end through the
 wrapper, the no-node fallback, the pi handler wiring, and the installer
 against a throwaway `$HOME`.
+
+### End-to-end, on a fresh machine
+
+`e2e/run.sh` builds a container with pi, Claude Code and Codex installed as an
+unprivileged user (no sudo anywhere), runs `install.py` there, and has each
+harness try — against a real model — to write an ordinary file (the positive
+control) and then a `*.human.md` file, first with its file tool and then with
+a shell redirect. It passes only if the ordinary file appears and the human
+file is byte-identical afterwards.
+
+It needs a local model server that speaks the OpenAI chat API (pi), the
+OpenAI Responses API (Codex) and the Anthropic Messages API (Claude Code) —
+llama.cpp / llama-swap do all three. Claude Code and Codex go through
+`e2e/local-model-shim.py`, which only rewrites the system-level turns those
+clients send mid-conversation (open chat templates such as Qwen's reject
+them). `HARNESSES="pi codex"` picks a subset.
+
+```bash
+LLM_BASE_URL=http://127.0.0.1:8080 LLM_MODEL=qwen3.6-35b-a3b e2e/run.sh
+```
+
+Transcripts land in `e2e/out/`.
 
 ## Files
 

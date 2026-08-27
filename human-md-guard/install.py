@@ -11,6 +11,9 @@ What it does, per tool - each step is skipped with --no-<tool>:
               Claude Code reloads the file live; no restart needed.
   codex       merges into ~/.codex/hooks.json:
                 - hooks.PreToolUse += the same hook, matched on apply_patch/Bash
+              Codex then needs the hook trusted once in an interactive session
+              ("Hooks need review" at startup, or /hooks); it silently skips
+              untrusted hooks.
 
 Merging, not overwriting: anything already in those files is preserved (only
 re-indented). Re-running is a no-op once the entries are present, and an entry
@@ -232,7 +235,13 @@ def main(argv: list[str]) -> int:
         (uninstall if args.uninstall else install)(home, args.dry_run)
 
     if not args.uninstall and not args.dry_run:
-        log("\nDone. Claude Code picks the change up live; restart pi and Codex sessions.")
+        log("\nDone. Claude Code picks the change up live; restart pi sessions.")
+        if not args.skip_codex:
+            log(
+                "\nCodex: hooks only run once you have trusted them. Start `codex` once,\n"
+                "and when it says \"Hooks need review\" choose \"Trust all and continue\"\n"
+                "(or use /hooks). Until then Codex silently skips this hook."
+            )
     return 0
 
 
