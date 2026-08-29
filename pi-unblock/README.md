@@ -97,11 +97,10 @@ built-in defaults - the full key set is `DEFAULTS` in `config.ts`, e.g.
 
 ## Headless runs
 
-Refusals and hints work anywhere. The abort-and-re-prompt path relies on pi
-delivering a queued follow-up after the aborted run; in `pi --print` mode
-the process may exit at the aborted run's end before that follow-up runs.
-The loop is still stopped (that is the expensive part); the model just does
-not get another turn. Set `maxStrikes` low for batch jobs.
+Everything works in `pi --print` mode too: refusals and hints are ordinary
+tool results and steer messages, and pi delivers the queued follow-up after
+the aborted run (verified below). For batch jobs a low `maxStrikes` keeps a
+model that will not stop from getting many second chances.
 
 ## Verified against pi
 
