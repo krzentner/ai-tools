@@ -12,6 +12,10 @@
  *   3. Shell timeouts. `bash`/`powershell` calls without a timeout get the
  *      default (60 s); requests above the ceiling (600 s) are clamped. The
  *      system prompt says so, and a timed-out result says how to get more.
+ *   4. Stalled model requests. A request that produces no first token within
+ *      a prefill-based deadline (prompt tokens / 100 tok/s + 30 s), or stops
+ *      streaming for 120 s, is aborted and re-prompted; the deadlines double
+ *      per consecutive stall up to 1 h, without ever giving up.
  *
  * After `maxStrikes` interruptions without a clean turn in between, the
  * extension stops re-prompting so a headless run ends instead of spinning at
@@ -20,6 +24,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { applyCommand, CONFIG_ENTRY, describe, EVENT_ENTRY, loadConfig, type UnblockConfig } from "./config.ts";
 import { detectTextLoop, type TextLoop } from "./detect.ts";
+import { firstTokenTimeoutMs, type Stall, stallReminder, StallWatch } from "./stall.ts";
 import { applyTimeout, TIMED_OUT_RE, TIMEOUT_TOOLS, timeoutGuidance, timeoutHint } from "./timeout.ts";
 import { signature, type ToolLoop, ToolTracker } from "./tools.ts";
 
@@ -73,6 +78,28 @@ export default function (pi: ExtensionAPI): void {
 		pi.appendEntry(EVENT_ENTRY, { kind, detail, strikes, ts: Date.now() });
 	};
 
+	// stalled-request watchdog (stalls are retried forever; they are not strikes)
+	let lastCtx: ExtensionContext | undefined;
+	let lastPromptTokens = 0;
+	const watch = new StallWatch(() => cfg.stall, (s) => onStall(s));
+
+	function onStall(s: Stall): void {
+		const ctx = lastCtx;
+		if (!ctx) return;
+		const nextFirst = Math.round(firstTokenTimeoutMs(lastPromptTokens, s.attempt, cfg.stall) / 1000);
+		record(`stall:${s.kind}`, `${s.kind} after ${Math.round(s.waitedMs / 1000)}s, attempt ${s.attempt}`);
+		notify(ctx, `pi-unblock: model request stalled (${s.kind}, ${Math.round(s.waitedMs / 1000)}s) - retrying, next limit ${nextFirst}s`);
+		try {
+			ctx.abort();
+		} catch {
+			/* not streaming */
+		}
+		pi.sendMessage(
+			{ customType: "pi-unblock/retry", content: stallReminder(s, nextFirst), display: true },
+			{ deliverAs: "followUp" },
+		);
+	}
+
 	const strike = (ctx: ExtensionContext, what: string): boolean => {
 		strikes++;
 		turnHadLoop = true;
@@ -112,6 +139,11 @@ export default function (pi: ExtensionAPI): void {
 		tracker = new ToolTracker(cfg.tools);
 		strikes = 0;
 		stream = "";
+		watch.reset();
+	});
+
+	pi.on("agent_end", async () => {
+		watch.stop();
 	});
 
 	pi.on("before_agent_start", async (event) => {
@@ -119,13 +151,19 @@ export default function (pi: ExtensionAPI): void {
 		return { systemPrompt: `${event.systemPrompt}\n\n${timeoutGuidance(cfg.timeout)}` };
 	});
 
-	pi.on("message_start", async (event) => {
+	pi.on("message_start", async (event, ctx) => {
 		if ((event.message as { role?: string }).role !== "assistant") return;
 		stream = "";
 		checkedAt = 0;
+		lastCtx = ctx;
+		if (cfg.stall.maxSeconds > 0) {
+			lastPromptTokens = ctx.getContextUsage?.()?.tokens ?? lastPromptTokens;
+			watch.start(lastPromptTokens);
+		}
 	});
 
 	pi.on("message_update", async (event, ctx) => {
+		watch.activity();
 		const ev = event.assistantMessageEvent as { type: string; delta?: string; toolCall?: { name: string; arguments: unknown } };
 		if (ev.type === "text_delta" || ev.type === "thinking_delta") {
 			stream += ev.delta ?? "";
@@ -140,6 +178,10 @@ export default function (pi: ExtensionAPI): void {
 	// Non-streaming providers, or a loop that completed between checks.
 	pi.on("message_end", async (event, ctx) => {
 		const m = event.message as { role?: string; stopReason?: string; content?: unknown };
+		if (m.role === "assistant") {
+			if (m.stopReason === "stop" || m.stopReason === "toolUse") watch.succeeded();
+			else watch.stop();
+		}
 		if (m.role !== "assistant" || m.stopReason === "aborted" || !cfg.enabled) return;
 		if (Date.now() - firedAt < cfg.cooldownMs) return;
 		const text = (Array.isArray(m.content) ? m.content : [])
@@ -222,6 +264,7 @@ export default function (pi: ExtensionAPI): void {
 					tracker.reset();
 					strikes = 0;
 					firedAt = 0;
+					watch.reset();
 				}
 				notify(ctx, r.message, "info");
 			} catch (e) {

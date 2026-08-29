@@ -4,6 +4,7 @@ import { test } from "node:test";
 import { applyCommand, DEFAULTS, deepMerge, setPath } from "./config.ts";
 import { detectLowDiversity, detectPeriodic, detectSimilarLines, detectTextLoop, jaccard, wordSet } from "./detect.ts";
 import registerExtension, { refusal, reminder } from "./index.ts";
+import { firstTokenTimeoutMs, idleTimeoutMs, StallWatch } from "./stall.ts";
 import { applyTimeout, timeoutHint } from "./timeout.ts";
 import { ToolTracker, signature } from "./tools.ts";
 
@@ -200,6 +201,7 @@ function harness() {
 			},
 		},
 		sessionManager: { getEntries: () => [] },
+		getContextUsage: () => undefined as { tokens: number } | undefined,
 	};
 	const emit = async (name: string, event: unknown): Promise<unknown> => {
 		let out: unknown;
@@ -331,4 +333,65 @@ test("extension: shell timeout default, clamp, hint on timeout, and system promp
 test("messages read well", () => {
 	assert.match(reminder({ kind: "periodic", detail: "x repeated", sample: "s" }), /interrupted/);
 	assert.match(refusal({ kind: "exact", count: 3, detail: "bash called 3 times" }), /Refused: bash called 3 times/);
+});
+
+// ------------------------------------------------------------------ stall.ts
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+test("stall deadlines: prefill estimate, backoff, cap", () => {
+	const p = DEFAULTS.stall;
+	assert.equal(firstTokenTimeoutMs(0, 0, p), 30_000);
+	assert.equal(firstTokenTimeoutMs(20_000, 0, p), 230_000); // 30 s + 20K tokens / 100 tok/s
+	assert.equal(firstTokenTimeoutMs(20_000, 1, p), 460_000);
+	assert.equal(firstTokenTimeoutMs(200_000, 3, p), 3_600_000); // capped at 1 h
+	assert.equal(idleTimeoutMs(0, p), 120_000);
+	assert.equal(idleTimeoutMs(6, p), 3_600_000);
+});
+
+test("stall watch: first-token stall, idle stall after activity, reset on success, deadlines grow", async () => {
+	const stalls: { kind: string; attempt: number }[] = [];
+	const fast = { prefillTokensPerSec: 1_000_000, baseSeconds: 0.03, idleSeconds: 0.03, maxSeconds: 1, backoff: 2 };
+	const w = new StallWatch(fast, (s) => stalls.push({ kind: s.kind, attempt: s.attempt }));
+	w.start(10);
+	await sleep(60);
+	assert.deepEqual(stalls, [{ kind: "first-token", attempt: 1 }]);
+	// second try: tokens flow, then stop -> idle stall, attempt 2
+	w.start(10);
+	await sleep(20);
+	w.activity();
+	await sleep(20);
+	w.activity();
+	await sleep(120); // idle limit is now 0.03 s x 2
+	assert.deepEqual(stalls.at(-1), { kind: "idle", attempt: 2 });
+	// a completed response resets
+	w.start(10);
+	w.activity();
+	w.succeeded();
+	assert.equal(w.attempts, 0);
+	await sleep(80);
+	assert.equal(stalls.length, 2, "nothing fires after stop");
+});
+
+test("extension: a stalled request is aborted and re-prompted without counting a strike", async () => {
+	const h = harness();
+	registerExtension(h.pi as never);
+	await h.commands.get("unblock")?.handler("set stall.baseSeconds 0.03", h.ctx);
+	await h.commands.get("unblock")?.handler("set stall.prefillTokensPerSec 1000000", h.ctx);
+	(h.ctx as { getContextUsage?: () => { tokens: number } }).getContextUsage = () => ({ tokens: 500 });
+	await h.emit("message_start", { message: assistant });
+	await sleep(80);
+	assert.equal(h.aborts(), 1);
+	const retry = h.sent.find((s) => s.kind === "message");
+	assert.ok(retry, "retry follow-up queued");
+	assert.match(JSON.stringify(retry?.payload), /did not start responding/);
+	assert.deepEqual(retry?.options, { deliverAs: "followUp" });
+	assert.ok(h.entries.some((e) => e.type === "pi-unblock/event" && /stall/.test(JSON.stringify(e.data))));
+	// the aborted message ends; a later clean response resets the attempt counter
+	await h.emit("message_end", { message: { role: "assistant", stopReason: "aborted", content: [] } });
+	await h.emit("message_start", { message: assistant });
+	await h.emit("message_update", delta("text_delta", "ok"));
+	await h.emit("message_end", { message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "ok" }] } });
+	await sleep(120);
+	assert.equal(h.aborts(), 1, "no further stall fired after a completed response");
 });

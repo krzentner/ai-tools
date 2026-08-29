@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { TextLoopConfig } from "./detect.ts";
+import type { StallPolicy } from "./stall.ts";
 import type { TimeoutPolicy } from "./timeout.ts";
 import type { ToolLoopConfig } from "./tools.ts";
 
@@ -14,6 +15,8 @@ export interface UnblockConfig {
 	textFuzzy: boolean;
 	tools: ToolLoopConfig;
 	timeout: TimeoutPolicy;
+	/** stalled model requests: abort and retry with growing deadlines, forever */
+	stall: StallPolicy;
 	/** interruptions (aborts or refusals) without a clean turn in between before pi-unblock stops re-prompting */
 	maxStrikes: number;
 	/** ignore streaming updates for this long after an interruption */
@@ -41,6 +44,7 @@ export const DEFAULTS: UnblockConfig = {
 		ignoredTools: ["edit", "write"],
 	},
 	timeout: { defaultSeconds: 60, maxSeconds: 600 },
+	stall: { prefillTokensPerSec: 100, baseSeconds: 30, idleSeconds: 120, maxSeconds: 3600, backoff: 2 },
 	maxStrikes: 3,
 	cooldownMs: 5000,
 	checkEveryChars: 40,
@@ -106,6 +110,7 @@ export function describe(cfg: UnblockConfig): string {
 		`text loops: repeat x${cfg.text.periodic.threshold}, fuzzy ${cfg.textFuzzy ? "on" : "off"}`,
 		`tool loops: refuse after ${t.exactBlockAfter} identical / ${t.stagnationBlockAfter} identical results, cycle hint x${t.cycleHintReps} refuse x${t.cycleBlockReps}`,
 		`shell timeout: default ${cfg.timeout.defaultSeconds}s, max ${cfg.timeout.maxSeconds}s`,
+		`stall: ${cfg.stall.baseSeconds}s + prompt/${cfg.stall.prefillTokensPerSec} tok/s to first token, ${cfg.stall.idleSeconds}s idle, x${cfg.stall.backoff} up to ${cfg.stall.maxSeconds}s (0 = off)`,
 		`strikes before giving up: ${cfg.maxStrikes}`,
 	].join(" | ");
 }

@@ -12,7 +12,13 @@ stops making progress:
    against recent calls: identical repeats and calls whose result has not
    changed are refused (the batch ends and the model gets a fresh turn); short
    cycles and near-repeats get a hint injected into the current turn.
-3. **Shell commands get a timeout.** `bash`/`powershell` calls without a
+3. **Stalled model requests are retried, forever.** A request that produces no
+   first token within `30 s + prompt_tokens / 100 tok/s` (a conservative
+   prefill estimate), or that stops streaming for 120 s, is aborted and the
+   model is re-prompted to continue; each consecutive stall doubles the
+   deadlines, capped at one hour. Stalls are not strikes and there is no
+   attempt limit - at the cap it keeps trying every hour.
+4. **Shell commands get a timeout.** `bash`/`powershell` calls without a
    `timeout` get 60 seconds; the model may ask for more, up to 600. The system
    prompt says so (pi's own tool description says "no default timeout"), and a
    timed-out result explains how to get more time or background the job.
@@ -55,6 +61,13 @@ A refusal returns an error result to the model and sets pi's `terminate`
 flag, so the current tool batch ends and the model answers with the refusal
 in view. A hint is a steer message delivered inside the current turn, once
 per kind per turn.
+
+**Stalls** (`stall.*`): first-token deadline `baseSeconds + promptTokens /
+prefillTokensPerSec` (30 s, 100 tok/s; the prompt size is pi's last known
+context usage), idle deadline `idleSeconds` (120 s), both times
+`backoff^attempt` (2) up to `maxSeconds` (3600; 0 disables). Every stall is a
+`pi-unblock/event` too. pi's own provider retry (3 attempts, 2 s base) still
+handles errored responses; this watchdog covers requests that never answer.
 
 **Escalation.** Every interruption (abort or refusal) is a strike; a turn
 without any detection clears them. After `maxStrikes` (3) without a clean
@@ -129,6 +142,7 @@ node --test index.test.ts     # Node >= 22.18
 - `detect.ts` - text detectors (periodic, similar-lines, low-diversity)
 - `tools.ts` - tool-call tracker (exact, stagnant, cycle, fuzzy)
 - `timeout.ts` - shell timeout policy and prompt text
+- `stall.ts` - stalled-request deadlines and watchdog
 - `config.ts` - defaults, config file, command grammar
 - `index.test.ts` - tests, including a replay of the failure that motivated this (14,308 `bash true` calls in one message)
 - `install.py` - symlink installer
