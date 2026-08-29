@@ -1,2 +1,5 @@
 # e2e transcripts
 human-md-guard/e2e/out/
+
+# typecheck helper links (node_modules -> a repo that has pi installed)
+node_modules
