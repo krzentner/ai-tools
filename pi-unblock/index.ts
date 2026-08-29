@@ -199,7 +199,7 @@ export default function (pi: ExtensionAPI): void {
 		if (!TIMEOUT_TOOLS.has(event.toolName) || !event.isError || cfg.timeout.defaultSeconds <= 0) return undefined;
 		const m = TIMED_OUT_RE.exec(text);
 		if (!m) return undefined;
-		return { content: [...event.content, { type: "text" as const, text: timeoutHint(cfg.timeout, Number(m[1])) }] };
+		return { content: [...event.content, { type: "text" as const, text: `\n${timeoutHint(cfg.timeout, Number(m[1]))}` }] };
 	});
 
 	pi.on("turn_end", async () => {
