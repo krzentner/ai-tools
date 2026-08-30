@@ -1,0 +1,19 @@
+{
+  "name": "pi-reasoning-coalesce",
+  "version": "0.1.0",
+  "description": "pi extension: merges OpenRouter's per-token reasoning_details before they are replayed, so models stop thinking one word per line",
+  "keywords": ["pi-package", "pi-extension", "pi", "openrouter", "reasoning", "thinking"],
+  "license": "MIT",
+  "type": "module",
+  "files": ["index.ts", "README.md"],
+  "scripts": {
+    "test": "node --test index.test.ts",
+    "check": "tsc -p . && node --test index.test.ts"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "pi": {
+    "extensions": ["./index.ts"]
+  }
+}
